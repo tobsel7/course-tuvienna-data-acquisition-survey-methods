@@ -1,0 +1,330 @@
+---
+title: "Assignment 1 - Web scraping & basic data analysis"
+author: "Tobias Abraham Haider"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    toc: TRUE
+---
+
+This is my submission for the first assignment done for the course
+*Data Acquisition and Survey Methods* during the summer semester 2025.
+
+# Preparation
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Imports
+
+The assignment is done mainly using the libraries `rvest` for data extraction
+from the html and `dplyr` for processing of the data table.
+```{r imports, message=FALSE}
+library(knitr)
+library(glue)
+library(lubridate)
+library(stringr)
+library(rvest)
+library(dplyr)
+library(ggplot2)
+```
+
+## Global variables
+
+As specified, the web page `timeanddate.com` is used as a data source.
+My name is **T**obias Haider. My choice for the city is **T**allinn, Estonia, a city
+that I like very much and has weather that is a little different from the
+weather in Vienna.
+
+Using `rvest`, it is easy to load all the web pages used in the analyses below.
+Sources:
+
+ - [Tallinn weather forecast (next 48 hours)](https://www.timeanddate.com/weather/estonia/tallinn)
+ - [Tallin weather detail forecast (next 24 hours)](https://www.timeanddate.com/weather/estonia/tallinn/hourly)
+ - [Tallinn weather yearly summary](https://www.timeanddate.com/weather/estonia/tallinn/climate)
+
+```{r gloabl_variables, message=FALSE}
+time_now <- Sys.time()
+
+country_name <- "estonia"
+city_name <- "tallinn"
+
+weather_forecast_48h_url <- glue("https://www.timeanddate.com/weather/{country_name}/{city_name}")
+weather_forecast_detail_24h_url <- glue("https://www.timeanddate.com/weather/{country_name}/{city_name}/hourly")
+weather_summary_annual_url <- glue("https://www.timeanddate.com/weather/{country_name}/{city_name}/climate")
+```
+
+## Data download
+
+With the `read_html` function a GET request is made and the response body is parsed as a html.
+I am not interested in any status codes and just assume that the data downloads
+succeed.
+
+```{r data_download, message=FALSE}
+weather_forecast_48h_html <- read_html(weather_forecast_48h_url)
+weather_forecast_detail_24h_html <- read_html(weather_forecast_detail_24h_url)
+weather_summary_annual_html <- read_html(weather_summary_annual_url)
+```
+
+# Analyses
+
+Starting from this section, the pre-loaded html is processed. The strategy is
+the following for all reports:
+
+ - Locate the relevant element within the web page
+ - Parse the table representation into a tibble
+ - Clean up the representation so that the result is a valid data table
+
+## 48 hour weather report
+
+![48h forecast web page]("~/pCloudDrive/Studium/MSC Data Sciene/6/Data Acquisition and Survey Methods/Assignments/Assignment 1/report/tallinn_48h.png")
+
+The main weather report is easily accessible. The page contains a `table` tag
+with a static id `wt-48` (probably an abbreviation for weather table 48 hours).
+It can directly be transformed to a tibble without custom parsing.
+
+Afterwards, it is transposed and some columns are removed.
+
+```{r 48_hour_weather_data_extraction, warning=FALSE}
+weather_forecast_48h_parsed <- weather_forecast_48h_html %>%
+  html_element("table#wt-48") %>% 
+  html_table(na.strings = "-") %>%
+  t() %>% 
+  as_tibble() %>%
+  slice(2:n()) %>% 
+  select(3:12)
+
+names(weather_forecast_48h_parsed) <- c("temp", "description", "feels_like", "wind_speed", "wind_direction", "humidity", "dew_point", "visibility", "precip_prob", "rain_amount")
+```
+
+Personally, I do not like having the weekday and the strings `morning`, `afternoon`,
+`evening` and `night` in the table, because this data will lose its meaning if
+time passes. To avoid confusion, I removed these columns and replace them by
+calculated time stamps estimating the expected time for which the forecast is
+made.
+
+```{r 48_hour_weather_data_cleaning}
+weather_forecast_48h <- weather_forecast_48h_parsed %>%
+  mutate(time = time_now + seq(6, 42, by = 6) * 3600) %>% # 6 hour interval
+  relocate(time, .before = 1)
+
+kable(weather_forecast_48h)
+```
+
+The result is a nice table containing all the information from the web page.
+It can now be used for reports and exports to other systems. Note that this
+table is still not a valid data table, because the entries still contain a lot
+of free text and unit characters. This is done in the next tasks and opens up
+the possibility to plot the data columns.
+
+## 24 hour weather report
+
+![24h forecast web page]("~/pCloudDrive/Studium/MSC Data Sciene/6/Data Acquisition and Survey Methods/Assignments/Assignment 1/report/tallinn_24h_detail.png")
+
+The detailed forecast is also easily accessible. The `table` element with the
+id `wt-hbh` holds all the information we need.
+
+```{r 24_hour_weather_data_extraction, message=FALSE}
+weather_forecast_detail_24h_parsed <- weather_forecast_detail_24h_html  %>%
+  html_element("table#wt-hbh") %>%
+  html_table(na.strings = "-") %>% 
+  as.matrix() %>% # there are columns with no name that prevent indexing
+  as_tibble(.name_repair = "unique") %>% 
+  slice(3:n() - 1) %>%
+  select(c(-2, -7))
+
+names(weather_forecast_detail_24h_parsed) <- c("time", "temp", "description", "feels_like", "wind_speed", "humidity", "precip_prob", "precip_amount")
+```
+
+For the time stamps, the same approach as before can be applied. First, the
+initial forecast time is calculated. All following forecasts have an interval of
+one hour.
+
+```{r 24_hour_weather_forecast_start_calculation}
+forecast_24h_start_time_hour_minute <- str_split(
+  str_extract(weather_forecast_detail_24h_parsed$time[1], "\\d{1,2}:\\d{2}"), 
+  ":", 
+  simplify = TRUE
+)
+weather_forecast_detail_24h_start_time <- update(
+  time_now, 
+  hour = as.integer(forecast_24h_start_time_hour_minute[1]), 
+  minute = as.integer(forecast_24h_start_time_hour_minute[2]), 
+  second = 0
+)
+if (weather_forecast_detail_24h_start_time < time_now) {
+  weather_forecast_detail_24h_start_time <- weather_forecast_detail_24h_start_time + days(1)
+}
+```
+
+To be able to plot the values, all units are removed from the entries.
+
+```{r 24_hour_weather_data_cleaning}
+weather_forecast_detail_24h <- weather_forecast_detail_24h_parsed %>%
+  mutate(
+    time = weather_forecast_detail_24h_start_time + hours(row_number() - 1),
+    temp = as.numeric(str_extract(temp, "-?[\\d\\.]+")),
+    feels_like = as.numeric(str_extract(feels_like, "-?[\\d\\.]+")),
+    wind_speed = as.numeric(str_extract(wind_speed, "[\\d\\.]+")),
+    humidity = as.numeric(str_extract(humidity, "[\\d\\.]+")) / 100,
+    precip_prob = as.numeric(str_extract(precip_prob, "[\\d\\.]+")) / 100,
+    precip_amount = as.numeric(str_extract(precip_amount, "[\\d\\.]+"))
+  )
+
+kable(weather_forecast_detail_24h)
+```
+
+### 24 hour temperature forecast plot
+
+```{r 24_hour_weather_temperature_plot}
+weather_forecast_detail_24h %>% ggplot(aes(x = time)) +
+  geom_line(aes(y = temp, color = "measured")) +
+  geom_line(aes(y = feels_like, color = "perceived")) + 
+  labs(x = "Time", y = "Temperature (C°)", color = "Temperature")
+```
+
+### 24 hour wind speed forecast plot
+
+```{r 24_hour_weather_wind_speed_plot}
+weather_forecast_detail_24h %>% ggplot(aes(x = time, y = wind_speed)) +
+  geom_line() + 
+  labs(x = "Time", y = "Wind speed (km/h)")
+```
+
+### 24 hour humidity forecast plot
+
+```{r 24_hour_weather_humidity_plot}
+weather_forecast_detail_24h %>% ggplot(aes(x = time, y = humidity)) +
+  scale_y_continuous(labels = scales::percent) +
+  geom_line() + 
+  labs(x = "Time", y = "Humidity")
+```
+
+## Annual weather report 
+
+![Annual weather report web page]("~/pCloudDrive/Studium/MSC Data Sciene/6/Data Acquisition and Survey Methods/Assignments/Assignment 1/report/tallinn_annual.png")
+
+Scraping data for the annual overview of the weather is quite tricky. The
+reason is the `div` elements that do not follow a common table structure. Also,
+the cells never just contain the clean numbers, but always some text or
+description that has no value.
+
+Still, it is possible to retrieve the data in a rather fast way. My approach
+was to rely on the given div structure and, most importantly, the order of the
+fields. With the CSS selector one can easily select all `p` tags containing the
+summary data. The result is a 1D flattened array with the size of 108 (12 * 9).
+For each month, there are exactly 9 values present:
+
+ - high_temp (first occurrence at index 1)
+ - low_temp (first occurrence at index 2)
+ - mean_temp (first occurrence at index 3)
+ - precipitation (first occurrence at index 4)
+ - humidity (first occurrence at index 5)
+ - dew_point (first occurrence at index 6)
+ - wind (first occurrence at index 7)
+ - pressure (first occurrence at index 8)
+ - visibility (first occurrence at index 9)
+ 
+```{r annual_weather_data_extraction}
+months_html <- weather_summary_annual_html %>%
+  html_elements("section#climateTable > div.climate-month:not(.climate-month--allyear) > div.four > p") %>%
+  html_text()
+
+weather_summary_annual_parsed <- tibble(
+  month = seq(1, 12),
+  high_temp = months_html[seq(1, 108, by = 9)],
+  low_temp = months_html[seq(2, 108, by = 9)],
+  mean_temp = months_html[seq(3, 108, by = 9)],
+  precipitation = months_html[seq(4, 108, by = 9)],
+  humidity = months_html[seq(5, 108, by = 9)],
+  dew_point = months_html[seq(6, 108, by = 9)],
+  wind = months_html[seq(7, 108, by = 9)],
+  pressure = months_html[seq(8, 108, by = 9)],
+  visibility = months_html[seq(9, 108, by = 9)]
+)
+```
+
+Every cell contains a description that can be removed. The simplest approach is
+to extract the number present using a regex. I do not exactly know when the
+values are floating points and when not. Because of this, all floating point
+numbers are accepted.
+
+For personal preference, percentage values are divided by 100.
+```{r annual_weather_data_cleaning}
+weather_summary_annual <- weather_summary_annual_parsed %>%
+  mutate(
+    high_temp = as.numeric(str_extract(high_temp, "-?[\\d\\.]+")),
+    low_temp = as.numeric(str_extract(low_temp, "-?[\\d\\.]+")),
+    mean_temp = as.numeric(str_extract(mean_temp, "-?[\\d\\.]+")),
+    precipitation = as.numeric(str_extract(precipitation, "[\\d\\.]+")),
+    humidity = as.numeric(str_extract(humidity, "[\\d\\.]+")) / 100,
+    dew_point = as.numeric(str_extract(dew_point, "-?[\\d\\.]+")),
+    wind = as.numeric(str_extract(wind, "[\\d\\.]+")),
+    pressure = as.numeric(str_extract(pressure, "[\\d\\.]+")),
+    visibility = as.numeric(str_extract(visibility, "[\\d\\.]+"))
+  )
+
+kable(weather_summary_annual)
+```
+
+### Annual weather metric summary
+
+With the clean data table at hand, the summary can be created with `summarise`
+masic math function.
+
+```{r annual_weather_summary}
+weather_summary_annual %>% summarise(
+  minimum_temp = min(low_temp),
+  maximum_temp = max(high_temp),
+  mean_temp = mean(mean_temp),
+  mean_precipitation = mean(precipitation)
+) %>% 
+  t() %>% 
+  kable()
+```
+
+### Annual weather temperature plot
+
+The temperature is plotted as a line plot. By plotting min, max and mean values
+with different colors, the spread of temperatures is clearly visible.
+
+```{r annual_weather_temperature_plot}
+weather_summary_annual %>% ggplot(aes(x = ymd(paste(2025, month, 1, sep = "-")))) +
+  geom_line(aes(y = low_temp, color = "low")) +
+  geom_line(aes(y = mean_temp, color = "mean")) + 
+  geom_line(aes(y = high_temp, color = "high")) + 
+  scale_x_date(date_breaks = "months" , date_labels = "%b") +
+  labs(x = "Month", y = "Temperature (C°)", color = "Temperature")
+```
+
+### Annual weather precipitation plot
+
+For the precipitation plot a bar chart is chosen. It is visibly more intuitive,
+because with precipitation one likes to compare months and not only analyze
+increases and decreases.
+
+```{r annual_weather_precipitation_plot}
+weather_summary_annual %>% ggplot(aes(x = ymd(paste(2025, month, 1, sep = "-")), y = precipitation)) +
+  geom_col() +
+  scale_x_date(date_breaks = "months" , date_labels = "%b") +
+  labs(x = "Month", y = "Precipitation (mm)",)
+```
+
+# Conclusion
+
+This assignment shows how publicly available web pages can be used to retrieve
+valuable data. It is quite straightforward to process the data using `rvest`
+and `dplyr` methods. When the data table is at hand, creating plots with
+`ggplot2` is also a transparent process.
+
+With this said, I feel like it is risky to employ such scripts in an automated
+manner. Many HTML tables are meant for visualization and not scraping. For some
+tables I have noticed that the number of columns change depending on the city.
+For example, precipitation is a field which can be split up into rain, snow, 
+and potentially more. There is no specification on when and how this splitting
+happens on the website.
+
+Furthermore, the default language of the client (device) used, changes the 
+parsed content. It is important to keep this in mind and make as little
+assumptions as possible to keep the code robust.
