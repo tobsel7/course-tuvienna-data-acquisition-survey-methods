@@ -1,0 +1,46 @@
+---
+title: "Assignment 2 - Survey data analysis"
+author: 
+ - "Haider, Tobias Abraham"
+ - "Selenge, Tuvshin"
+ - "Crespí, Ahmad Antonio"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    toc: TRUE
+---
+
+# Preparation
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Imports
+
+```{r imports, message=FALSE}
+library(knitr)
+library(ggplot2)
+```
+
+## Global variables
+
+```{r gloabl_variables, message=FALSE}
+
+```
+
+## Data loading
+
+```{r data_loading, message=FALSE}
+
+```
+
+# Analyses
+
+## Title1
+
+## Title2
+
+## Title3
+
+# Conclusion
